@@ -860,7 +860,7 @@ mwan3_set_user_iptables_rule()
 				${dest_port:+-m} ${dest_port:+multiport} ${dest_port:+--dports} $dest_port \
 				-m mark --mark 0/$MMX_MASK \
 				-j $policy
-	}
+	fi
 
 }
 
