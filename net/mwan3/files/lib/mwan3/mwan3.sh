@@ -723,6 +723,7 @@ mwan3_set_user_iptables_rule()
 	rule="$1"
 	ipv="$2"
 	rule_policy=0
+	config_get enable "$1" enable 0
 	config_get sticky "$1" sticky 0
 	config_get timeout "$1" timeout 600
 	config_get ipset "$1" ipset
@@ -737,128 +738,129 @@ mwan3_set_user_iptables_rule()
 	config_get rule_logging "$1" logging 0
 	config_get global_logging globals logging 0
 	config_get loglevel globals loglevel notice
-
-	[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return
-	[ "$family" = "ipv4" ] && [ "$ipv" = "ipv6" ] && return
-	[ "$family" = "ipv6" ] && [ "$ipv" = "ipv4" ] && return
-
-	for ipaddr in "$src_ip" "$dest_ip"; do
-		if [ -n "$ipaddr" ] && { { [ "$ipv" = "ipv4" ] && echo "$ipaddr" | grep -qE "$IPv6_REGEX"; } ||
-						 { [ "$ipv" = "ipv6" ] && echo "$ipaddr" | grep -qE $IPv4_REGEX; } }; then
-			LOG warn "invalid $ipv address $ipaddr specified for rule $rule"
+	if [ $enable -eq 1 ]; then
+		[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return
+		[ "$family" = "ipv4" ] && [ "$ipv" = "ipv6" ] && return
+		[ "$family" = "ipv6" ] && [ "$ipv" = "ipv4" ] && return
+	
+		for ipaddr in "$src_ip" "$dest_ip"; do
+			if [ -n "$ipaddr" ] && { { [ "$ipv" = "ipv4" ] && echo "$ipaddr" | grep -qE "$IPv6_REGEX"; } ||
+							{ [ "$ipv" = "ipv6" ] && echo "$ipaddr" | grep -qE $IPv4_REGEX; } }; then
+				LOG warn "invalid $ipv address $ipaddr specified for rule $rule"
+				return
+			fi
+		done
+	
+		if [ -n "$src_iface" ]; then
+			network_get_device src_dev "$src_iface"
+			if [ -z "$src_dev" ]; then
+				LOG notice "could not find device corresponding to src_iface $src_iface for rule $1"
+				return
+			fi
+		fi
+	
+		[ -z "$dest_ip" ] && unset dest_ip
+		[ -z "$src_ip" ] && unset src_ip
+		[ -z "$ipset" ] && unset ipset
+		[ -z "$src_port" ] && unset src_port
+		[ -z "$dest_port" ] && unset dest_port
+		if [ "$proto" != 'tcp' ] && [ "$proto" != 'udp' ]; then
+			[ -n "$src_port" ] && {
+				LOG warn "src_port set to '$src_port' but proto set to '$proto' not tcp or udp. src_port will be ignored"
+			}
+	
+			[ -n "$dest_port" ] && {
+				LOG warn "dest_port set to '$dest_port' but proto set to '$proto' not tcp or udp. dest_port will be ignored"
+			}
+			unset src_port
+			unset dest_port
+		fi
+	
+		if [ "$1" != "$(echo "$1" | cut -c1-15)" ]; then
+			LOG warn "Rule $1 exceeds max of 15 chars. Not setting rule" && return 0
+		fi
+	
+		if [ -n "$ipset" ]; then
+			ipset="-m set --match-set $ipset dst"
+		fi
+	
+		if [ -z "$use_policy" ]; then
 			return
 		fi
-	done
-
-	if [ -n "$src_iface" ]; then
-		network_get_device src_dev "$src_iface"
-		if [ -z "$src_dev" ]; then
-			LOG notice "could not find device corresponding to src_iface $src_iface for rule $1"
-			return
+	
+		if [ "$use_policy" = "default" ]; then
+			policy="MARK --set-xmark $MMX_DEFAULT/$MMX_MASK"
+		elif [ "$use_policy" = "unreachable" ]; then
+			policy="MARK --set-xmark $MMX_UNREACHABLE/$MMX_MASK"
+		elif [ "$use_policy" = "blackhole" ]; then
+			policy="MARK --set-xmark $MMX_BLACKHOLE/$MMX_MASK"
+		else
+			rule_policy=1
+			policy="mwan3_policy_$use_policy"
+			if [ "$sticky" -eq 1 ]; then
+				$IPS -! create "mwan3_sticky_v4_$rule" \
+					hash:ip,mark markmask "$MMX_MASK" \
+					timeout "$timeout"
+				[ $NO_IPV6 -eq 0 ] &&
+					$IPS -! create "mwan3_sticky_v6_$rule" \
+						hash:ip,mark markmask "$MMX_MASK" \
+						timeout "$timeout" family inet6
+				$IPS -! create "mwan3_sticky_$rule" list:set
+				$IPS -! add "mwan3_sticky_$rule" "mwan3_sticky_v4_$rule"
+				[ $NO_IPV6 -eq 0 ] &&
+					$IPS -! add "mwan3_sticky_$rule" "mwan3_sticky_v6_$rule"
+			fi
 		fi
-	fi
-
-	[ -z "$dest_ip" ] && unset dest_ip
-	[ -z "$src_ip" ] && unset src_ip
-	[ -z "$ipset" ] && unset ipset
-	[ -z "$src_port" ] && unset src_port
-	[ -z "$dest_port" ] && unset dest_port
-	if [ "$proto" != 'tcp' ] && [ "$proto" != 'udp' ]; then
-		[ -n "$src_port" ] && {
-			LOG warn "src_port set to '$src_port' but proto set to '$proto' not tcp or udp. src_port will be ignored"
-		}
-
-		[ -n "$dest_port" ] && {
-			LOG warn "dest_port set to '$dest_port' but proto set to '$proto' not tcp or udp. dest_port will be ignored"
-		}
-		unset src_port
-		unset dest_port
-	fi
-
-	if [ "$1" != "$(echo "$1" | cut -c1-15)" ]; then
-		LOG warn "Rule $1 exceeds max of 15 chars. Not setting rule" && return 0
-	fi
-
-	if [ -n "$ipset" ]; then
-		ipset="-m set --match-set $ipset dst"
-	fi
-
-	if [ -z "$use_policy" ]; then
-		return
-	fi
-
-	if [ "$use_policy" = "default" ]; then
-		policy="MARK --set-xmark $MMX_DEFAULT/$MMX_MASK"
-	elif [ "$use_policy" = "unreachable" ]; then
-		policy="MARK --set-xmark $MMX_UNREACHABLE/$MMX_MASK"
-	elif [ "$use_policy" = "blackhole" ]; then
-		policy="MARK --set-xmark $MMX_BLACKHOLE/$MMX_MASK"
-	else
-		rule_policy=1
-		policy="mwan3_policy_$use_policy"
-		if [ "$sticky" -eq 1 ]; then
-			$IPS -! create "mwan3_sticky_v4_$rule" \
-			     hash:ip,mark markmask "$MMX_MASK" \
-			     timeout "$timeout"
-			[ $NO_IPV6 -eq 0 ] &&
-				$IPS -! create "mwan3_sticky_v6_$rule" \
-				     hash:ip,mark markmask "$MMX_MASK" \
-				     timeout "$timeout" family inet6
-			$IPS -! create "mwan3_sticky_$rule" list:set
-			$IPS -! add "mwan3_sticky_$rule" "mwan3_sticky_v4_$rule"
-			[ $NO_IPV6 -eq 0 ] &&
-				$IPS -! add "mwan3_sticky_$rule" "mwan3_sticky_v6_$rule"
+	
+		if [ $rule_policy -eq 1 ] && [ -n "${current##*-N $policy$'\n'*}" ]; then
+			mwan3_push_update -N "$policy"
 		fi
-	fi
-
-	if [ $rule_policy -eq 1 ] && [ -n "${current##*-N $policy$'\n'*}" ]; then
-		mwan3_push_update -N "$policy"
-	fi
-
-	if [ $rule_policy -eq 1 ] && [ "$sticky" -eq 1 ]; then
-		if [ -n "${current##*-N mwan3_rule_$1$'\n'*}" ]; then
-			mwan3_push_update -N "mwan3_rule_$1"
+	
+		if [ $rule_policy -eq 1 ] && [ "$sticky" -eq 1 ]; then
+			if [ -n "${current##*-N mwan3_rule_$1$'\n'*}" ]; then
+				mwan3_push_update -N "mwan3_rule_$1"
+			fi
+	
+			mwan3_push_update -F "mwan3_rule_$1"
+			config_foreach mwan3_set_sticky_iptables interface $ipv
+	
+	
+			mwan3_push_update -A "mwan3_rule_$1" \
+					-m mark --mark 0/$MMX_MASK \
+					-j "$policy"
+			mwan3_push_update -A "mwan3_rule_$1" \
+					-m mark ! --mark 0xfc00/0xfc00 \
+					-j SET --del-set "mwan3_sticky_$rule" src,src
+			mwan3_push_update -A "mwan3_rule_$1" \
+					-m mark ! --mark 0xfc00/0xfc00 \
+					-j SET --add-set "mwan3_sticky_$rule" src,src
+			policy="mwan3_rule_$1"
 		fi
-
-		mwan3_push_update -F "mwan3_rule_$1"
-		config_foreach mwan3_set_sticky_iptables interface $ipv
-
-
-		mwan3_push_update -A "mwan3_rule_$1" \
-				  -m mark --mark 0/$MMX_MASK \
-				  -j "$policy"
-		mwan3_push_update -A "mwan3_rule_$1" \
-				  -m mark ! --mark 0xfc00/0xfc00 \
-				  -j SET --del-set "mwan3_sticky_$rule" src,src
-		mwan3_push_update -A "mwan3_rule_$1" \
-				  -m mark ! --mark 0xfc00/0xfc00 \
-				  -j SET --add-set "mwan3_sticky_$rule" src,src
-		policy="mwan3_rule_$1"
-	fi
-	if [ "$global_logging" = "1" ] && [ "$rule_logging" = "1" ]; then
+		if [ "$global_logging" = "1" ] && [ "$rule_logging" = "1" ]; then
+			mwan3_push_update -A mwan3_rules \
+					-p "$proto" \
+					${src_ip:+-s} $src_ip \
+					${src_dev:+-i} $src_dev \
+					${dest_ip:+-d} $dest_ip \
+					$ipset \
+					${src_port:+-m} ${src_port:+multiport} ${src_port:+--sports} $src_port \
+					${dest_port:+-m} ${dest_port:+multiport} ${dest_port:+--dports} $dest_port \
+					-m mark --mark 0/$MMX_MASK \
+					-m comment --comment "$1" \
+					-j LOG --log-level "$loglevel" --log-prefix "MWAN3($1)"
+		fi
+	
 		mwan3_push_update -A mwan3_rules \
-				  -p "$proto" \
-				  ${src_ip:+-s} $src_ip \
-				  ${src_dev:+-i} $src_dev \
-				  ${dest_ip:+-d} $dest_ip \
-				  $ipset \
-				  ${src_port:+-m} ${src_port:+multiport} ${src_port:+--sports} $src_port \
-				  ${dest_port:+-m} ${dest_port:+multiport} ${dest_port:+--dports} $dest_port \
-				  -m mark --mark 0/$MMX_MASK \
-				  -m comment --comment "$1" \
-				  -j LOG --log-level "$loglevel" --log-prefix "MWAN3($1)"
-	fi
-
-	mwan3_push_update -A mwan3_rules \
-			  -p "$proto" \
-			  ${src_ip:+-s} $src_ip \
-			  ${src_dev:+-i} $src_dev \
-			  ${dest_ip:+-d} $dest_ip \
-			  $ipset \
-			  ${src_port:+-m} ${src_port:+multiport} ${src_port:+--sports} $src_port \
-			  ${dest_port:+-m} ${dest_port:+multiport} ${dest_port:+--dports} $dest_port \
-			  -m mark --mark 0/$MMX_MASK \
-			  -j $policy
+				-p "$proto" \
+				${src_ip:+-s} $src_ip \
+				${src_dev:+-i} $src_dev \
+				${dest_ip:+-d} $dest_ip \
+				$ipset \
+				${src_port:+-m} ${src_port:+multiport} ${src_port:+--sports} $src_port \
+				${dest_port:+-m} ${dest_port:+multiport} ${dest_port:+--dports} $dest_port \
+				-m mark --mark 0/$MMX_MASK \
+				-j $policy
+	}
 
 }
 
