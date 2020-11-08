@@ -61,6 +61,12 @@ $(call Package/haproxy/Default/description)
  This package is built with SSL and LUA support.
 endef
 
+define Package/haproxy/config
+config USE_DEFAULT_INIT_SCRIPT
+	bool "Use the the default init script"
+	default y
+endef
+
 define Package/haproxy-nossl
   TITLE+= (without SSL support)
   VARIANT:=nossl
@@ -125,10 +131,13 @@ endef
 define Package/haproxy/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/haproxy $(1)/usr/sbin/
+ifeq ($(USE_DEFAULT_INIT_SCRIPT),y)
 	$(INSTALL_DIR) $(1)/etc
 	$(INSTALL_CONF) ./files/haproxy.cfg $(1)/etc/
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/haproxy.init $(1)/etc/init.d/haproxy
+endif
+
 endef
 
 Package/haproxy-nossl/install = $(Package/haproxy/install)
