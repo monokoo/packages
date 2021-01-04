@@ -79,7 +79,7 @@ mwan3_route_line_dev()
 	unset "$1"
 	[ -z "$route_device" ] && return
 
-	curr_table=$(eval "echo	 \"\$mwan3_dev_tbl_${route_family}\"")
+	curr_table=$(eval "echo \"\$mwan3_dev_tbl_${route_family}\"")
 	for entry in $curr_table; do
 		if [ "${entry%%=*}" = "$route_device" ]; then
 			_tid=${entry##*=}
@@ -410,9 +410,6 @@ mwan3_delete_iface_iptables()
 
 mwan3_get_routes()
 {
-	local source_routing
-	config_get_bool source_routing globals source_routing 0
-	[ $source_routing -eq 0 ] && unset source_routing
 	$IP route list table main | sed -ne "$MWAN3_ROUTE_LINE_EXP" | uniq
 }
 
